@@ -1,0 +1,20 @@
+# Optional add-on: use Amazon RDS for PostgreSQL instead of the db container.
+#
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml \
+#     -f deploy/docker-compose.rds.yml up -d --build migrate server web caddy
+#
+# Listing the services explicitly keeps the local db container from starting.
+# RDS_DATABASE_URL and RDS_MIGRATE_URL are set in the .env file.
+
+services:
+  migrate:
+    environment:
+      DATABASE_URL: ${RDS_MIGRATE_URL:?set RDS_MIGRATE_URL in .env}
+    depends_on: !reset {}
+
+  server:
+    environment:
+      DATABASE_URL: ${RDS_DATABASE_URL:?set RDS_DATABASE_URL in .env}
+    volumes:
+      # Amazon's CA bundle, so the server can verify the RDS certificate.
+      - ./deploy/rds-ca.pem:/certs/rds-ca.pem:ro

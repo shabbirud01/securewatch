@@ -1,0 +1,22 @@
+# Production add-on: Caddy in front of the dashboard, for HTTPS (automatic Let's
+# Encrypt certificates), a login, and HSTS. Use together with the main file:
+#
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml up -d --build
+#
+# Paths are relative to the repository root (the directory of the first file).
+
+services:
+  caddy:
+    image: caddy:2-alpine # pin an exact version in production
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # certificates: keep them across restarts
+    depends_on:
+      - web
+
+volumes:
+  caddy_data:

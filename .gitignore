@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Prisma client is generated from schema.prisma (npm install / npm run db:generate)
+server/src/generated/
+
+# Secrets and local configuration: commit .env.example, never .env
+.env
+.env.*
+!.env.example
+
+# Deployment files with your own values
+deploy/Caddyfile
+deploy/rds-ca.pem
+
+# Test coverage
+coverage/
+
+# Logs and OS files
+*.log
+.DS_Store
+Thumbs.db

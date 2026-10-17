@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    // Node 24 supports everything up to ES2024 natively, so nothing is down-levelled.
+    "target": "es2024",
+    "lib": ["es2024"],
+    "types": ["node"],
+
+    // Native Node ES modules. Relative imports must name the *compiled* file,
+    // so they end in ".js" even though the source file is ".ts":
+    //   import { prisma } from "./db.js";
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    // Type-only imports must say so (`import type`), so the emitted JS is predictable.
+    "verbatimModuleSyntax": true,
+
+    "rootDir": "src",
+    "outDir": "dist",
+    "sourceMap": true,
+
+    "strict": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src"]
+}

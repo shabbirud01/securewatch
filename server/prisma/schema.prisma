@@ -1,0 +1,173 @@
+// SecureWatch database schema
+//
+//   Domain 1 ──< Scan 1 ──< CheckResult
+//     1           1
+//     └──< AlertLog >──┘   (an alert belongs to a domain and, optionally, the scan that triggered it)
+//
+// Workflow: edit this file, then `npm run db:migrate -- --name <what-changed>`.
+// Prisma diffs the schema against the database, writes a versioned SQL migration
+// to prisma/migrations/, applies it, and regenerates the typed client.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  // Stated explicitly instead of letting Prisma infer them from tsconfig.json: in the
+  // Docker build, `prisma generate` runs before tsconfig.json is copied in, and the
+  // inferred ".ts" imports then crash Node at runtime.
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // The connection URL is configured in prisma.config.ts (read from .env).
+}
+
+// ─── Domains ─────────────────────────────────────────────────────────────────
+
+/// A TLS endpoint we monitor.
+model Domain {
+  id        Int      @id @default(autoincrement())
+  /// Stored normalised: lowercase, no trailing dot. The API normalises input.
+  hostname  String
+  port      Int      @default(443)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  scans  Scan[]
+  alerts AlertLog[]
+
+  // The same host on another port is a different TLS server
+  // (e.g. tls-v1-0.badssl.com:1010), so uniqueness is on the pair.
+  @@unique([hostname, port])
+}
+
+// ─── Scans ───────────────────────────────────────────────────────────────────
+
+enum ScanStatus {
+  SUCCESS // we reached the server and graded it (the grade itself may still be F)
+  FAILED // no grade possible: DNS failure, timeout, connection refused, handshake error
+}
+
+enum ScanTrigger {
+  MANUAL
+  SCHEDULED
+}
+
+enum Grade {
+  A
+  B
+  C
+  D
+  F
+}
+
+/// One run of every check against one domain.
+/// Rows are inserted once and never updated: the table is an append-only history,
+/// which is what makes "grade over time" and "did the grade drop?" possible.
+model Scan {
+  id         Int         @id @default(autoincrement())
+  domainId   Int
+  domain     Domain      @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  trigger    ScanTrigger
+  status     ScanStatus
+  /// Null when the scan FAILED: "unreachable" is not the same as "insecure".
+  grade      Grade?
+  /// 0-100, before it is mapped to a letter grade.
+  score      Int?
+  /// Why the scan failed, e.g. "ETIMEDOUT: no response within 10s".
+  error      String?
+  startedAt  DateTime    @default(now())
+  durationMs Int
+
+  // Summary copied from the certificate check so the dashboard table can be built
+  // from Scan rows alone. "Days to expiry" is NOT stored: it changes every day
+  // while this row does not, so it is computed from certValidTo when read.
+  certSubject     String?
+  certIssuer      String?
+  certValidFrom   DateTime?
+  certValidTo     DateTime?
+  /// SHA-256 fingerprint. It changes when the certificate is renewed, which is how
+  /// expiry alerts know they are looking at a new certificate.
+  certFingerprint String?
+  /// Protocol versions the server accepted, e.g. {"TLS 1.2","TLS 1.3"}.
+  tlsVersions     String[]  @default([])
+
+  checks CheckResult[]
+  alerts AlertLog[]
+
+  // Serves our two hot queries: "latest scan of domain X" and
+  // "history of domain X, newest first".
+  @@index([domainId, startedAt(sort: Desc)])
+}
+
+// ─── Check results ───────────────────────────────────────────────────────────
+
+enum CheckCategory {
+  CERTIFICATE
+  PROTOCOL
+  HTTPS
+  HEADERS
+}
+
+enum CheckStatus {
+  PASS
+  WARN
+  FAIL
+  SKIPPED // could not be evaluated, e.g. no headers because the HTTPS request failed
+}
+
+/// The outcome of one check within one scan, e.g. checkKey "header.hsts" -> FAIL.
+/// Only what we observed is stored here. What it means and how to fix it
+/// (plain-English text, sample Nginx config) is fixed knowledge, so it lives in
+/// code keyed by checkKey instead of being copied into every row.
+model CheckResult {
+  id        Int           @id @default(autoincrement())
+  scanId    Int
+  scan      Scan          @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  /// Stable identifier of the check, e.g. "cert.expiry", "tls.v1_0", "header.hsts".
+  checkKey  String
+  category  CheckCategory
+  status    CheckStatus
+  /// Points this check subtracted from the starting score of 100.
+  deduction Int           @default(0)
+  /// What we saw, in one line, e.g. "max-age=300 is below the recommended 1 year".
+  summary   String
+  /// Raw observed values for the detail page, e.g. { "maxAge": 300 }.
+  details   Json?
+
+  // Each check runs once per scan. This unique index also serves
+  // "all checks of scan X", so no separate index on scanId is needed.
+  @@unique([scanId, checkKey])
+}
+
+// ─── Alerts ──────────────────────────────────────────────────────────────────
+
+enum AlertType {
+  CERT_EXPIRY
+  GRADE_DROP
+  SCAN_FAILED
+  SCAN_RECOVERED
+}
+
+/// Every alert email we have sent.
+/// The unique (domainId, dedupeKey) pair is the de-duplication guarantee: an alert
+/// is recorded before it is sent, and a second insert with the same key is rejected
+/// by Postgres itself, even if two scans of the same domain run at the same moment.
+/// Example keys:
+///   "cert-expiry:14:<fingerprint>"  the 14-day warning, once per certificate
+///   "scan-failed:<scanId>"          once per outage, not once per failed scan
+///   "recovered:<scanId>"            once when the outage ends
+model AlertLog {
+  id        Int       @id @default(autoincrement())
+  domainId  Int
+  domain    Domain    @relation(fields: [domainId], references: [id], onDelete: Cascade)
+  scanId    Int?
+  scan      Scan?     @relation(fields: [scanId], references: [id], onDelete: SetNull)
+  type      AlertType
+  dedupeKey String
+  subject   String
+  sentAt    DateTime  @default(now())
+
+  @@unique([domainId, dedupeKey])
+}

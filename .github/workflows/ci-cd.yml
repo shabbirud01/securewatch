@@ -1,0 +1,117 @@
+# CI/CD for SecureWatch, on GitHub Actions.
+#
+# CI, on every pull request and every push to main:
+#   server  install, type-check, unit tests, build
+#   web     install, type-check, build
+#   stack   build the Docker images, start the whole stack (fresh database, migrations
+#           and all) and call /api/health through nginx
+#
+# CD, on pushes to main only, once all three have passed:
+#   deploy  log in to the server over SSH and run deploy/deploy.sh. Skipped until a server
+#           is configured: repository variables DEPLOY_HOST, DEPLOY_USER and DEPLOY_KNOWN_HOSTS,
+#           and the secret DEPLOY_SSH_KEY.
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only: no job here needs to change the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  # A new push to a pull request makes its older run pointless. Runs on main are never
+  # cancelled, because one may be in the middle of a deploy; they queue instead.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  server:
+    name: Server
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      # Installs exactly what package-lock.json lists. Its postinstall step generates the
+      # Prisma client, which needs no database.
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  web:
+    name: Dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run build # type-check (tsc), then the production build (vite)
+
+  stack:
+    name: Docker stack
+    needs: [server, web]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the images and start everything
+        run: docker compose up -d --build
+      # /api/health runs a database query, so a 200 here means nginx, the API, the
+      # migrations and the database all work together.
+      - name: Wait for the API, through nginx
+        run: curl --fail --silent --show-error --retry 30 --retry-delay 2 --retry-all-errors http://127.0.0.1:8080/api/health
+      - name: Check the dashboard is served
+        run: curl --fail --silent --show-error http://127.0.0.1:8080/ | grep -q '<div id="root">'
+      - name: Show the logs
+        if: failure()
+        run: docker compose logs
+      - name: Stop and remove everything
+        if: always()
+        run: docker compose down --volumes
+
+  deploy:
+    name: Deploy
+    needs: [server, web, stack]
+    # Pushes to main only, never pull requests (which can come from forks), and only once a
+    # server has been configured.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_HOST != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Lists every deploy under the repository's Deployments, and allows requiring an approval.
+    environment: production
+    steps:
+      - name: Install the deploy key and the server's host key
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/deploy_key ~/.ssh/known_hosts
+      # StrictHostKeyChecking=yes: connect only if the server proves it holds the host key in
+      # known_hosts, so nobody in between can pose as it. On the server, the key is
+      # restricted to running deploy.sh, which deploys exactly this commit.
+      - name: Deploy this commit
+        env:
+          TARGET: ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}
+        run: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes "$TARGET" "bash securewatch/deploy/deploy.sh $GITHUB_SHA"

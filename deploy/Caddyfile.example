@@ -1,0 +1,15 @@
+# Copy to deploy/Caddyfile, then replace the domain and the password hash.
+# Make a hash with:
+#   docker run --rm caddy:2-alpine caddy hash-password --plaintext 'your-password'
+
+securewatch.example.com {
+	# SecureWatch has no login of its own, so the proxy asks for one.
+	basic_auth {
+		admin $2a$14$REPLACE_WITH_YOUR_HASH
+	}
+
+	# HTTPS is terminated here, so this is where HSTS belongs.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	reverse_proxy web:80
+}

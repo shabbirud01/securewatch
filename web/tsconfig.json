@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "es2022",
+    "lib": ["es2023", "dom", "dom.iterable"],
+    "module": "esnext",
+    // Vite resolves imports, so they can omit file extensions.
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "types": ["vite/client"],
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    // tsc only type-checks; Vite does the actual compiling and bundling.
+    "noEmit": true
+  },
+  "include": ["src", "vite.config.ts"]
+}
